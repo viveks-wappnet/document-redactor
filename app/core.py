@@ -40,7 +40,8 @@ class ModelManager:
             hf_token = os.getenv("HF_TOKEN")
             if hf_token:
                 login(token=hf_token)
-            self.gliner = GLiNER.from_pretrained(os.getenv("GLINER_MODEL_NAME"))
+            self.gliner = GLiNER.from_pretrained(os.getenv("GLINER_MODEL_NAME"), load_onnx_model=True, load_tokenizer=True, onnx_model_file="onnx\model.onnx")
+            # self.gliner = GLiNER.from_pretrained(os.getenv("GLINER_MODEL_NAME"))
             print("GLiNER initialized.")
 
 def get_model_manager():
