@@ -1,73 +1,105 @@
 import io
-from typing import Tuple, List
-import cv2
-import numpy as np
+from io import BytesIO
+from typing import Tuple, List, Dict, Any
 from PIL import Image, ImageDraw
+import pytesseract
+from pytesseract import Output
+from collections import defaultdict
 
 class RedactionService:
     """Service for detecting and redacting PII in images using OCR and GLiNER models."""
 
-    def __init__(self, reader, gliner_model):
+    def __init__(self, gliner_model, confidence_threshold: int = 60, box_padding: int = 5):
         """
+        Initialize the redaction service.
+        
         Args:
-            reader: Initialized EasyOCR reader
-            gliner_model: Initialized GLiNER model
+            gliner_model: Pre-loaded GLiNER model instance.
+            confidence_threshold: Minimum OCR confidence score (default: 60).
+            box_padding: Pixels to add around bounding boxes (default: 5).
         """
-        if not reader or not gliner_model:
-            raise ValueError("Models must be pre-loaded and provided during initialization.")
-        self._reader = reader
+        if not gliner_model:
+            raise ValueError("GLiNER model must be pre-loaded and provided during initialization.")
         self._gliner = gliner_model
+        self.confidence_threshold = confidence_threshold
+        self.box_padding = box_padding
 
-    def _decode_image(self, image_bytes: bytes) -> np.ndarray:
-        """Converts raw image bytes to RGB numpy array."""
-        arr = np.frombuffer(image_bytes, np.uint8)
-        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-        if img is None:
-            raise ValueError("Invalid image bytes")
-        return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    def detect_text_and_boxes(self, image_bytes: bytes) -> Tuple[Image.Image, List[Dict[str, Any]]]:
+        pil_img = Image.open(BytesIO(image_bytes)).convert('RGB')
+        
+        try:
+            data = pytesseract.image_to_data(
+                pil_img,
+                config=r'--oem 3 --psm 4',
+                output_type=Output.DICT
+            )
+        except Exception as e:
+            raise RuntimeError(f"OCR processing failed: {str(e)}")
 
-    def detect_text_and_boxes(self, image_bytes: bytes) -> Tuple[Image.Image, List[Tuple[str, List[int]]]]:
-        """Locates text in image and returns bounding boxes with their content."""
-        rgb = self._decode_image(image_bytes)
-        detections = self._reader.readtext(rgb)
+        lines = defaultdict(lambda: {'words': [], 'boxes': []})
+        # Iterate over the OCR data using zip for better readability
+        for block_num, par_num, line_num, word_text, conf_score, left, top, width, height in zip(
+            data['block_num'], data['par_num'], data['line_num'], data['text'], data['conf'],
+            data['left'], data['top'], data['width'], data['height']
+        ):
+            word = word_text.strip()
+            conf = conf_score
+            if isinstance(conf, str):
+                conf = int(conf) if conf.isdigit() else -1
+            elif not isinstance(conf, int):
+                conf = -1
 
-        boxed_words = []
-        for bbox, text, _ in detections:
-            x_coords = [p[0] for p in bbox]
-            y_coords = [p[1] for p in bbox]
-            x, y = int(min(x_coords)), int(min(y_coords))
-            w, h = int(max(x_coords) - x), int(max(y_coords) - y)
-            boxed_words.append((text, [x, y, w, h]))
+            if not word or conf < self.confidence_threshold:
+                continue
 
-        pil_img = Image.fromarray(rgb)
-        return pil_img, boxed_words
+            key = (block_num, par_num, line_num)
+            lines[key]['words'].append(word)
+            x, y, w, h = (left, top, width, height)
+            lines[key]['boxes'].append((x, y, w, h))
 
-    def classify_pii(self, boxed_words: List[Tuple[str, List[int]]]) -> List[List[int]]:
-        """Returns bounding boxes of text identified as PII."""
+        result = [
+            {'text': ' '.join(lines[key]['words']), 'boxes': lines[key]['boxes']}
+            for key in lines
+        ]
+        return pil_img, result
+
+    def classify_pii(self, lines: List[Dict[str, Any]]) -> List[Tuple[int, int, int, int]]:
+        """Return bounding boxes of text identified as PII."""
         pii_boxes = []
-        for word, box in boxed_words:
-            ents = self._gliner.predict_entities(word, labels=["PERSON", "EMAIL", "PHONE", "ID"])
-            if any(e["label"] in {"PERSON", "EMAIL", "PHONE", "ID"} for e in ents):
-                pii_boxes.append(box)
+        for entry in lines:
+            text = entry["text"]
+            boxes = entry["boxes"]
+            try:
+                ents = self._gliner.predict_entities(
+                    text,
+                    labels=["PERSON", "EMAIL", "PHONE", "ADDRESS"]
+                )
+                if any(e["label"] in {"PERSON", "EMAIL", "PHONE", "ADDRESS"} for e in ents):
+                    pii_boxes.extend(boxes)
+            except Exception as e:
+                print(f"Error classifying PII in '{text}': {e}")
         return pii_boxes
 
-    def redact_image(self, image: Image.Image, boxes: List[List[int]]) -> Image.Image:
-        """Blacks out specified regions in the image."""
+    def redact_image(self, image: Image.Image, boxes: List[Tuple[int, int, int, int]]) -> Image.Image:
+        """Redact specified regions in the image with black rectangles."""
+        image = image.convert("RGB")  # Ensure RGB mode for drawing
         draw = ImageDraw.Draw(image)
         for x, y, w, h in boxes:
             draw.rectangle([x, y, x + w, y + h], fill="black")
         return image
 
-    def process_redaction(self, image_bytes: bytes) -> dict:
-        """Runs the complete redaction pipeline and returns redacted image with box coordinates."""
-        img, boxed_words = self.detect_text_and_boxes(image_bytes)
-        pii_boxes = self.classify_pii(boxed_words)
-        redacted_img = self.redact_image(img.copy(), pii_boxes)
-        
-        buf = io.BytesIO()
-        redacted_img.save(buf, format="PNG")
-        
-        return {
-            "boxes": pii_boxes,
-            "redacted_image": buf.getvalue()
-        }
+    def process_redaction(self, image_bytes: bytes) -> Dict[str, Any]:
+        """Process an image to detect and redact PII, returning redacted image and boxes."""
+        try:
+            img, lines = self.detect_text_and_boxes(image_bytes)
+            pii_boxes = self.classify_pii(lines)
+            redacted = self.redact_image(img.copy(), pii_boxes)
+
+            buf = io.BytesIO()
+            redacted.save(buf, format="PNG")
+            return {
+                "boxes": pii_boxes,
+                "redacted_image": buf.getvalue()
+            }
+        except Exception as e:
+            raise RuntimeError(f"Redaction processing failed: {str(e)}")

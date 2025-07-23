@@ -10,18 +10,17 @@ router = APIRouter()
 
 def get_redaction_service() -> RedactionService:
     """
-    Provides a RedactionService instance with pre-loaded ML models.
+    Provides a RedactionService instance with a pre-loaded ML model.
 
-    Ensures EasyOCR reader and GLiNER model are available; raises 503 if not.
+    Ensures the GLiNER model is available; raises 503 if not.
     """
     manager = get_model_manager()
-    if not manager.easyocr_reader or not manager.gliner:
+    if not manager.gliner:
         raise HTTPException(
             status_code=503, 
-            detail="Models are not available or initialized. Please check server logs."
+            detail="GLiNER model is not available or initialized. Please check server logs."
         )
     return RedactionService(
-        reader=manager.easyocr_reader, 
         gliner_model=manager.gliner
     )
 
@@ -49,8 +48,6 @@ def redact_upload(
     total_boxes = 0
     
     for page in pages:
-        # The 'redactor' instance is now provided by the Depends() system,
-        # fully equipped with the pre-loaded models.
         result = redactor.process_redaction(page.img_bytes)
         total_boxes += len(result["boxes"])
         

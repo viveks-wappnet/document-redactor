@@ -1,8 +1,8 @@
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 from app.database import get_db, SessionLocal
-from ..models import Upload, Page, UploadStatus
-import fitz  # PyMuPDF
+from app.models import Upload, Page, UploadStatus
+import fitz 
 from io import BytesIO
 from PIL import Image
 from uuid import UUID

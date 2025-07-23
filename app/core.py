@@ -1,23 +1,18 @@
 import os
-import easyocr
+import pytesseract
 from huggingface_hub import login
 from gliner import GLiNER
 from dotenv import load_dotenv
-import warnings
 
-# Suppress specific warnings for cleaner logs
-warnings.filterwarnings('ignore', category=UserWarning, message='.*pin_memory.*')
-warnings.filterwarnings('ignore', category=UserWarning, message='.*sentencepiece tokenizer.*')
-warnings.filterwarnings('ignore', message='Asking to truncate.*')
+pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 class ModelManager:
-    """Singleton manager for ML models ensuring one-time initialization of EasyOCR and GLiNER."""
+    """Singleton manager for ML models ensuring one-time initialization of GLiNER."""
     _instance = None
     
     def __init__(self):
         if ModelManager._instance is not None:
             raise RuntimeError("Use ModelManager.get_instance() to get the single instance of this class.")
-        self.easyocr_reader = None
         self.gliner = None
         
     @classmethod
@@ -28,12 +23,7 @@ class ModelManager:
         return cls._instance
     
     def initialize(self):
-        """Loads EasyOCR and GLiNER models if not already initialized."""
-        if self.easyocr_reader is None:
-            print("Initializing EasyOCR...")
-            self.easyocr_reader = easyocr.Reader(['en'], gpu=False, verbose=False)
-            print("EasyOCR initialized.")
-            
+        """Loads GLiNER model if not already initialized."""
         if self.gliner is None:
             print("Initializing GLiNER...")
             load_dotenv()
@@ -41,7 +31,6 @@ class ModelManager:
             if hf_token:
                 login(token=hf_token)
             self.gliner = GLiNER.from_pretrained(os.getenv("GLINER_MODEL_NAME"), load_onnx_model=True, load_tokenizer=True, onnx_model_file="onnx\model.onnx")
-            # self.gliner = GLiNER.from_pretrained(os.getenv("GLINER_MODEL_NAME"))
             print("GLiNER initialized.")
 
 def get_model_manager():
